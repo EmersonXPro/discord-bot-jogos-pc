@@ -7,6 +7,14 @@ import asyncio
 import re
 import logging
 import os
+import sys
+
+# Patch para evitar erro do audioop no Python 3.13+
+# O discord.py tenta importar audioop, que foi removido no Python 3.13
+if sys.version_info >= (3, 13):
+    import types
+    audioop_mock = types.ModuleType("audioop")
+    sys.modules["audioop"] = audioop_mock
 
 # Configuração de logging
 logging.basicConfig(
@@ -291,8 +299,6 @@ def parse_steamrip(html: str, page_url: str):
     download_links = []
     
     # Método Fallback Regex para links de download (SteamRIP)
-    # Procura por links que pareçam de download (buzzheavier, gofile, qiwi, etc)
-    # Padrão: href="//buzzheavier.com/..." ou href="https://gofile.io/..."
     patterns = [
         r'href=["\'](https?:)?//(buzzheavier\.com/[^"\']+)["\']',
         r'href=["\'](https?:)?//(gofile\.io/[^"\']+)["\']',
@@ -377,37 +383,40 @@ async def on_ready():
 @tree.command(name="jogos", description="Busca links de download para um jogo de PC")
 @app_commands.describe(pc="Nome do jogo que você quer encontrar")
 async def jogos(interaction: discord.Interaction, pc: str):
-    await interaction.response.defer()
+    # Usar defer para evitar timeout do Discord (máximo 3 segundos)
+    await interaction.response.defer(thinking=True)
     
     logger.info(f"Usuário {interaction.user} buscou por: {pc}")
 
-    async with aiohttp.ClientSession() as session:
-        # Busca paralela nos dois sites
-        results = await asyncio.gather(
-            search_repackgames(session, pc),
-            search_steamrip(session, pc)
-        )
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Busca paralela nos dois sites
+            results = await asyncio.gather(
+                search_repackgames(session, pc),
+                search_steamrip(session, pc),
+                return_exceptions=True
+            )
 
-    # Filtrar resultados válidos
-    valid_results = [r for r in results if r and r.get("download_links")]
+        # Filtrar resultados válidos
+        valid_results = [r for r in results if isinstance(r, dict) and r.get("download_links")]
 
-    if not valid_results:
-        await interaction.followup.send(f"❌ Não encontrei nenhum link de download para **{pc}** nos sites monitorados.")
-        return
+        if not valid_results:
+            await interaction.followup.send(f"❌ Não encontrei nenhum link de download para **{pc}** nos sites monitorados.")
+            return
 
-    # Pegar o melhor resultado (prioridade para o que tiver mais info ou for o primeiro)
-    res = valid_results[0]
-    
-    # Montar a resposta conforme o modelo solicitado
-    title = res['title']
-    links = res['download_links']
-    primary = links[0]['url'] if len(links) > 0 else "Não disponível"
-    secondary = links[1]['url'] if len(links) > 1 else "Não disponível"
-    
-    req = res['sys_req']
-    info = res['game_info']
-    
-    response_text = f"""
+        # Pegar o melhor resultado
+        res = valid_results[0]
+        
+        # Montar a resposta conforme o modelo solicitado
+        title = res['title']
+        links = res['download_links']
+        primary = links[0]['url'] if len(links) > 0 else "Não disponível"
+        secondary = links[1]['url'] if len(links) > 1 else "Não disponível"
+        
+        req = res['sys_req']
+        info = res['game_info']
+        
+        response_text = f"""
 **Jogo: {title}**
 
 **Link Primário:** {primary}
@@ -434,12 +443,18 @@ async def jogos(interaction: discord.Interaction, pc: str):
 **Método de Instalação:**
     Após baixar o arquivo do jogo através dos links acima, em seu PC extraia o arquivo usando um gerenciador de arquivos, recomendo o WinRAR. Dentro da pasta do jogo, Procurar o Executável do Jogo que geralmente é o nome do jogo com .Exe no final, execute como Administrador - Pronto, seja feliz.
 """
-    
-    embed = discord.Embed(description=response_text, color=discord.Color.blue())
-    if res['image_url']:
-        embed.set_image(url=res['image_url'])
-    
-    await interaction.followup.send(embed=embed)
+        
+        embed = discord.Embed(description=response_text, color=discord.Color.blue())
+        if res['image_url']:
+            embed.set_image(url=res['image_url'])
+        
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        logger.error(f"Erro ao processar comando /jogos: {e}")
+        try:
+            await interaction.followup.send("❌ Ocorreu um erro ao processar sua busca. Tente novamente mais tarde.")
+        except:
+            pass
 
 
 # Servidor Keep-Alive para o Render (Web Service)
@@ -453,15 +468,21 @@ def home():
     return "Bot is alive!"
 
 def run():
-    app.run(host='0.0.0.0', port=8080)
+    # Render usa a porta da variável de ambiente PORT
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
     t = Thread(target=run)
+    t.daemon = True
     t.start()
 
 if __name__ == "__main__":
     if TOKEN:
         keep_alive()
-        bot.run(TOKEN)
+        try:
+            bot.run(TOKEN)
+        except Exception as e:
+            logger.error(f"Erro fatal ao rodar o bot: {e}")
     else:
         logger.error("Erro: DISCORD_TOKEN não encontrado nas variáveis de ambiente.")
