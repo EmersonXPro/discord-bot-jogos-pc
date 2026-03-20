@@ -1,3 +1,19 @@
+import sys
+import types
+
+# Patch CRÍTICO para evitar erro do audioop no Python 3.13+
+# Deve ser executado ANTES de importar o discord.py
+if sys.version_info >= (3, 13) or "audioop" not in sys.modules:
+    try:
+        import audioop
+    except ImportError:
+        audioop_mock = types.ModuleType("audioop")
+        # Adicionar funções vazias que o discord.py pode tentar usar
+        audioop_mock.mul = lambda data, size, factor: data
+        audioop_mock.tomono = lambda data, size, lfactor, rfactor: data
+        audioop_mock.max = lambda data, size: 0
+        sys.modules["audioop"] = audioop_mock
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -7,14 +23,6 @@ import asyncio
 import re
 import logging
 import os
-import sys
-
-# Patch para evitar erro do audioop no Python 3.13+
-# O discord.py tenta importar audioop, que foi removido no Python 3.13
-if sys.version_info >= (3, 13):
-    import types
-    audioop_mock = types.ModuleType("audioop")
-    sys.modules["audioop"] = audioop_mock
 
 # Configuração de logging
 logging.basicConfig(
@@ -470,6 +478,7 @@ def home():
 def run():
     # Render usa a porta da variável de ambiente PORT
     port = int(os.environ.get("PORT", 8080))
+    logger.info(f"Iniciando servidor Flask na porta {port}...")
     app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
